@@ -1,4 +1,7 @@
-# g2o_ba_example
+# g2o_ba_example - udpate to use opencv3
+
+
+
 An easy example of doing bundle adjustment within two images using g2o. 
 
 Require: g2o, OpenCV 2.4.x
