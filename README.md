@@ -1,4 +1,4 @@
-# g2o_ba_example - udpate to use opencv3
+# g2o_ba_example - update to use opencv3
 
 
 
