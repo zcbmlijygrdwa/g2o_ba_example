@@ -31,7 +31,7 @@ using namespace std;
 // 输入：img1, img2 两张图像
 // 输出：points1, points2, 两组对应的2D点
 int     findCorrespondingPoints( const cv::Mat& img1, const cv::Mat& img2, vector<cv::Point2f>& points1, vector<cv::Point2f>& points2 );
-
+const int MAX_FEATURES = 500;
 // 相机内参
 double cx = 325.5;
 double cy = 253.5;
@@ -50,7 +50,7 @@ int main( int argc, char** argv )
     // 读取图像
     cv::Mat img1 = cv::imread( argv[1] ); 
     cv::Mat img2 = cv::imread( argv[2] ); 
-    
+
     // 找到对应点
     vector<cv::Point2f> pts1, pts2;
     if ( findCorrespondingPoints( img1, img2, pts1, pts2 ) == false )
@@ -65,9 +65,9 @@ int main( int argc, char** argv )
     // 使用Cholmod中的线性方程求解器
     g2o::BlockSolver_6_3::LinearSolverType* linearSolver = new  g2o::LinearSolverCholmod<g2o::BlockSolver_6_3::PoseMatrixType> ();
     // 6*3 的参数
-    g2o::BlockSolver_6_3* block_solver = new g2o::BlockSolver_6_3( linearSolver );
+    g2o::BlockSolver_6_3* block_solver = new g2o::BlockSolver_6_3( std::unique_ptr<g2o::BlockSolver_6_3::LinearSolverType>(linearSolver) );
     // L-M 下降 
-    g2o::OptimizationAlgorithmLevenberg* algorithm = new g2o::OptimizationAlgorithmLevenberg( block_solver );
+    g2o::OptimizationAlgorithmLevenberg* algorithm = new g2o::OptimizationAlgorithmLevenberg( std::unique_ptr<g2o::BlockSolver_6_3>(block_solver) );
     
     optimizer.setAlgorithm( algorithm );
     optimizer.setVerbose( false );
@@ -179,11 +179,11 @@ int main( int argc, char** argv )
 
 int     findCorrespondingPoints( const cv::Mat& img1, const cv::Mat& img2, vector<cv::Point2f>& points1, vector<cv::Point2f>& points2 )
 {
-    cv::ORB orb;
+    cv::Ptr<cv::Feature2D> orb = cv::ORB::create(MAX_FEATURES);
     vector<cv::KeyPoint> kp1, kp2;
     cv::Mat desp1, desp2;
-    orb( img1, cv::Mat(), kp1, desp1 );
-    orb( img2, cv::Mat(), kp2, desp2 );
+    orb->detectAndCompute( img1, cv::Mat(), kp1, desp1 );
+    orb->detectAndCompute( img2, cv::Mat(), kp2, desp2 );
     cout<<"分别找到了"<<kp1.size()<<"和"<<kp2.size()<<"个特征点"<<endl;
     
     cv::Ptr<cv::DescriptorMatcher>  matcher = cv::DescriptorMatcher::create( "BruteForce-Hamming");
