@@ -9,10 +9,15 @@
 
 // for std
 #include <iostream>
+//for Eigen
+#include <Eigen/Core>
+#include <Eigen/Geometry>
 // for opencv 
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
+#include <opencv2/calib3d/calib3d.hpp>
 #include <opencv2/features2d/features2d.hpp>
+#include <opencv2/core/eigen.hpp>
 #include <boost/concept_check.hpp>
 // for g2o
 #include <g2o/core/sparse_optimizer.h>
@@ -24,8 +29,8 @@
 #include <g2o/types/slam3d/se3quat.h>
 #include <g2o/types/sba/types_six_dof_expmap.h>
 
-
 using namespace std;
+using namespace Eigen;
 
 // 寻找两个图像中的对应点，像素坐标系
 // 输入：img1, img2 两张图像
@@ -46,7 +51,7 @@ int main( int argc, char** argv )
         cout<<"Usage: ba_example img1, img2"<<endl;
         exit(1);
     }
-    
+
     // 读取图像
     cv::Mat img1 = cv::imread( argv[1] ); 
     cv::Mat img2 = cv::imread( argv[2] ); 
@@ -59,19 +64,32 @@ int main( int argc, char** argv )
         return 0;
     }
     cout<<"找到了"<<pts1.size()<<"组对应特征点。"<<endl;
+
+
+    //use epipolar constrain
+    cv::Mat mask;
+    cv::Mat e_mat;
+    e_mat = cv::findEssentialMat(pts1,pts2,(fx+fy)*0.5,cv::Point2d(cx,cy),cv::RANSAC, 0.999, 1.f,mask);
+    cout << "E:" << endl << e_mat/e_mat.at<double>(2,2) << endl;
+    cv::Mat R, t;
+    cv::recoverPose(e_mat, pts1, pts2, R, t,fx,cv::Point2d(cx,cy),mask);
+    //end of using epipolar constrain
+
     // 构造g2o中的图
     // 先构造求解器
     g2o::SparseOptimizer    optimizer;
     // 使用Cholmod中的线性方程求解器
     g2o::BlockSolver_6_3::LinearSolverType* linearSolver = new  g2o::LinearSolverCholmod<g2o::BlockSolver_6_3::PoseMatrixType> ();
     // 6*3 的参数
+    // 6 X 3 matrix, why 6 X 3?
     g2o::BlockSolver_6_3* block_solver = new g2o::BlockSolver_6_3( std::unique_ptr<g2o::BlockSolver_6_3::LinearSolverType>(linearSolver) );
     // L-M 下降 
+    // select a iteration strategy
     g2o::OptimizationAlgorithmLevenberg* algorithm = new g2o::OptimizationAlgorithmLevenberg( std::unique_ptr<g2o::BlockSolver_6_3>(block_solver) );
-    
+
     optimizer.setAlgorithm( algorithm );
     optimizer.setVerbose( false );
-    
+
     // 添加节点
     // 两个位姿节点
     for ( int i=0; i<2; i++ )
@@ -98,12 +116,12 @@ int main( int argc, char** argv )
         v->setEstimate( Eigen::Vector3d(x,y,z) );
         optimizer.addVertex( v );
     }
-    
+
     // 准备相机参数
     g2o::CameraParameters* camera = new g2o::CameraParameters( fx, Eigen::Vector2d(cx, cy), 0 );
     camera->setId(0);
     optimizer.addParameter( camera );
-    
+
     // 准备边
     // 第一帧
     vector<g2o::EdgeProjectXYZ2UV*> edges;
@@ -134,27 +152,32 @@ int main( int argc, char** argv )
         optimizer.addEdge( edge );
         edges.push_back(edge);
     }
-    
+
     cout<<"开始优化"<<endl;
     optimizer.setVerbose(true);
     optimizer.initializeOptimization();
-    optimizer.optimize(10);
+    optimizer.optimize(100);
     cout<<"优化完毕"<<endl;
-    
+
     //我们比较关心两帧之间的变换矩阵
     g2o::VertexSE3Expmap* v = dynamic_cast<g2o::VertexSE3Expmap*>( optimizer.vertex(1) );
     Eigen::Isometry3d pose = v->estimate();
+
+    //since there is no scale, unify the pose
     cout<<"Pose="<<endl<<pose.matrix()<<endl;
-    
+    Matrix3d rot_mat;
+    cv::cv2eigen(R,rot_mat);
+    Vector3d ea = rot_mat.eulerAngles(2, 1, 0);
+    cout<<"Pose[from epipolar constrain]: ea = "<<endl<<ea.transpose()<<endl<<"T = "<<endl<<t<<endl; 
     // 以及所有特征点的位置
-    for ( size_t i=0; i<pts1.size(); i++ )
-    {
-        g2o::VertexSBAPointXYZ* v = dynamic_cast<g2o::VertexSBAPointXYZ*> (optimizer.vertex(i+2));
-        cout<<"vertex id "<<i+2<<", pos = ";
-        Eigen::Vector3d pos = v->estimate();
-        cout<<pos(0)<<","<<pos(1)<<","<<pos(2)<<endl;
-    }
-    
+    //for ( size_t i=0; i<pts1.size(); i++ )
+    //{
+    //    g2o::VertexSBAPointXYZ* v = dynamic_cast<g2o::VertexSBAPointXYZ*> (optimizer.vertex(i+2));
+    //    cout<<"vertex id "<<i+2<<", pos = ";
+    //    Eigen::Vector3d pos = v->estimate();
+    //    cout<<pos(0)<<","<<pos(1)<<","<<pos(2)<<endl;
+    //}
+
     // 估计inlier的个数
     int inliers = 0;
     for ( auto e:edges )
@@ -170,7 +193,7 @@ int main( int argc, char** argv )
             inliers++;
         }
     }
-    
+
     cout<<"inliers in total points: "<<inliers<<"/"<<pts1.size()+pts2.size()<<endl;
     optimizer.save("ba.g2o");
     return 0;
@@ -185,9 +208,9 @@ int     findCorrespondingPoints( const cv::Mat& img1, const cv::Mat& img2, vecto
     orb->detectAndCompute( img1, cv::Mat(), kp1, desp1 );
     orb->detectAndCompute( img2, cv::Mat(), kp2, desp2 );
     cout<<"分别找到了"<<kp1.size()<<"和"<<kp2.size()<<"个特征点"<<endl;
-    
+
     cv::Ptr<cv::DescriptorMatcher>  matcher = cv::DescriptorMatcher::create( "BruteForce-Hamming");
-    
+
     double knn_match_ratio=0.8;
     vector< vector<cv::DMatch> > matches_knn;
     matcher->knnMatch( desp1, desp2, matches_knn, 2 );
@@ -197,16 +220,16 @@ int     findCorrespondingPoints( const cv::Mat& img1, const cv::Mat& img2, vecto
         if (matches_knn[i][0].distance < knn_match_ratio * matches_knn[i][1].distance )
             matches.push_back( matches_knn[i][0] );
     }
-    
+
     if (matches.size() <= 20) //匹配点太少
         return false;
-    
+
     for ( auto m:matches )
     {
         points1.push_back( kp1[m.queryIdx].pt );
         points2.push_back( kp2[m.trainIdx].pt );
     }
-    
+
     return true;
 }
 
